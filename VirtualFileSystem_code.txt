@@ -1,0 +1,614 @@
+/*
+ * Name:Luv Saxena
+ * ID #:1001387325
+ * Programming Assignment 4
+ * Description: This program will provide the user with ~33MB of “virtual” drive
+ * space. Users will have the ability to list the files currently in the file system, add files, and
+ * remove files. Files will not persist in the file system when the program exits.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <time.h>
+
+#define NUM_BLOCKS 4226
+#define BLOCK_SIZE 8192
+#define NUM_FILES 128
+#define NUM_INODES 128
+#define MAX_BLOCK_NUM_PER_FILE 32
+
+unsigned char data_blocks[NUM_BLOCKS][BLOCK_SIZE];
+int used_blocks[NUM_BLOCKS];
+int offset, copy_size;
+time_t file_time;
+
+void initialize_dir_inode();
+//int intialize_shell();
+
+struct inode 
+{
+  time_t date;
+  int valid;
+  int size;
+  int blocks[MAX_BLOCK_NUM_PER_FILE];
+};
+
+//struct inode inode_array[NUM_INODES];
+struct inode * inode_array_ptr[NUM_INODES];
+
+struct directory_entry 
+{
+  char * name;
+  int valid;
+  int inode_idx;
+};
+
+struct directory_entry * directory_ptr;
+//struct directory_entry * directory_array_ptr[NUM_FILES];
+
+/*Function: initialize_dir_inode
+ *Parameters: 
+ *Returns: void
+ *Description: this function initializes the directory pointer and Indoe Index with the default value.
+*/
+void initialize_dir_inode() {
+  int i;
+  directory_ptr = (struct directory_entry * ) & data_blocks[0];
+
+  for (i = 0; i < NUM_FILES; i++) 
+  {
+    directory_ptr[i].valid = 0;
+  }
+  int inode_idx = 0;
+  for (i = 1; i < 130; i++) 
+  {
+    inode_array_ptr[inode_idx++] = (struct inode * ) & data_blocks[i];
+  }
+}
+
+/*Function: findFreeDirectoryEntry
+ *Parameters: 
+ *Returns: int
+ *Description: this function returns the free Directory Entry number into the file system.
+*/
+int findFreeDirectoryEntry() {
+  int i;
+  int retval = -1;
+  for (i = 1; i < 128; i++) 
+  {
+    if (directory_ptr[i].valid == 0) 
+    {
+      retval = i;
+      break;
+    }
+  }
+  return retval;
+}
+
+/*Function: findFreeBlock
+ *Parameters: 
+ *Returns: int
+ *Description: this function returns the free inode number into the file system.
+*/
+int findFreeInode() {
+  int i;
+  int retval = -1;
+  for (i = 1; i < 128; i++) 
+  {
+    if (inode_array_ptr[i] -> valid == 0) 
+    {
+      retval = i;
+      break;
+    }
+  }
+  return retval;
+}
+
+/*Function: findFreeBlock
+ *Parameters: 
+ *Returns: int
+ *Description: this function returns the free block number.
+*/
+int findFreeBlock() {
+  int i;
+  for (i = 130; i < NUM_BLOCKS; i++) 
+  {
+    if (used_blocks[i] == 0) 
+    {
+      return i;
+    }
+  }
+}
+
+/*Function: findFreeInodeBlockEntry
+ *Parameters: inode_index
+ *Returns: int
+ *Description: this function returns the index of the block available for the particular inode.
+*/
+int findFreeInodeBlockEntry(int inode_index) {
+  int i;
+  int retval = -1;
+  for (i = 0; i < MAX_BLOCK_NUM_PER_FILE; i++) 
+  {
+    if (inode_array_ptr[inode_index] -> blocks[i] == 0) 
+    {
+      retval = i;
+      break;
+    }
+  }
+  return retval;
+}
+
+int df() {
+  int count = 0;
+  int i;
+  for (i = 130; i < NUM_BLOCKS; i++) 
+  {
+    if (used_blocks[i] == 0) 
+    {
+      count++;
+    }
+  }
+  return count * BLOCK_SIZE;
+}
+
+/*Function: read_string
+ *Parameters: void - It accpets no parameter as this method is used to read input string.
+ *Returns: String of characters enter by user.
+ *Description: It read the the command  entered by mfs shell user
+ *and copy it in variable name "command" and retrun it to its calling function.
+ */
+char * readString(void) {
+  int buffer_size = 1024;
+  //parse and store
+  char * command = malloc(sizeof(char) * buffer_size);
+  memset(command, 0, 1024);
+  if (!command) 
+  {
+    exit(EXIT_FAILURE);
+  }
+
+  while (1) {
+    //takes user input
+    if (fgets(command, 1024, stdin) == NULL) return NULL;
+    size_t length = strlen(command);
+
+    // replace the end of the file with the null character
+    if (command[length - 1] == '\n') 
+    {
+      command[length - 1] = '\0';
+      return command;
+    }
+    return command;
+  }
+}
+
+/*Function: split_command
+ *Parameter(s):command- A pointer to string of character contains user command
+ *Returns: Pointer to Array of String contains tokens of string of user command
+ *Description: Tokenizes the user command once " \t\n\r" delimeters are found
+ *and put different token into different index of string array.
+ */
+char * * split_command(char * command) {
+  int buffer_size = 255;
+  char * * tokens = malloc(buffer_size * sizeof(char * ));
+  char * token;
+  token = strtok(command, " ");
+  int i = 0;
+  // tokenize the user command to treat it like separate strings.
+  while (token != NULL) 
+  {
+    tokens[i] = token;
+    i++;
+    token = strtok(NULL, " ");
+  }
+  tokens[i] = NULL;
+  return tokens;
+}
+
+/*Function: put
+ *Parameters: cmd
+ *Returns: void
+ *Description: this function is responsible to put the valid file into the file system.
+*/
+void put(char * * cmd) {
+
+  int status;
+  struct stat buf;
+  char * fileName = cmd[1];
+  status = stat(fileName, & buf);
+
+  if (status == -1) 
+  {
+    printf("put error: File not found.\n");
+    return;
+  } 
+  else 
+  {
+    int count = 0;
+    copy_size = buf.st_size;
+    if ((copy_size > 32 * BLOCK_SIZE)) 
+    {
+      printf("File size too big\n");
+      return;
+    }
+    if (copy_size > df()) 
+    {
+      printf("put error: Not enough disk space.\n");
+      return;
+    }
+
+    int dir_idx = findFreeDirectoryEntry();
+
+    if (dir_idx == -1) 
+    {
+      printf("put error: Not enough disk space.\n");
+      return;
+    }
+
+    FILE * ifp = fopen(cmd[1], "r");
+    directory_ptr[dir_idx].valid = 1;
+    directory_ptr[dir_idx].name = (char * ) malloc(strlen(cmd[1]));
+    strncpy(directory_ptr[dir_idx].name, cmd[1], strlen(cmd[1]));
+
+    // Store inode Index
+    int inode_idx = findFreeInode();
+    if (inode_idx == -1) 
+    {
+      printf("No free Inode");
+      return;
+    }
+    directory_ptr[dir_idx].inode_idx = inode_idx;
+
+    inode_array_ptr[inode_idx] -> size = copy_size;
+    inode_array_ptr[inode_idx] -> date = time(NULL);
+    inode_array_ptr[inode_idx] -> valid = 1;
+
+    int block_index = findFreeBlock();
+    if (block_index == -1) 
+    {
+      printf("Error Cant find free Block");
+      return;
+    }
+
+    while (copy_size >= BLOCK_SIZE) 
+    {
+      if (block_index == -1) 
+      {
+        printf("Error Cant find free Block");
+        return;
+      }
+
+      used_blocks[block_index] = 1;
+      int inode_block_entry = findFreeInodeBlockEntry(inode_idx);
+
+      if (inode_block_entry == -1) 
+      {
+
+        printf("Luv Error: Cannot find free node block\n");
+        return;
+      }
+      inode_array_ptr[inode_idx] -> blocks[inode_block_entry] = block_index;
+      // Index into the input file by offset number of bytes.  Initially offset is set to
+      // zero so we copy BLOCK_SIZE number of bytes from the front of the file.  We
+      // then increase the offset by BLOCK_SIZE and continue the process.  This will
+      // make us copy from offsets 0, BLOCK_SIZE, 2*BLOCK_SIZE, 3*BLOCK_SIZE, etc.
+      fseek(ifp, offset, SEEK_SET);
+
+      // Read BLOCK_SIZE number of bytes from the input file and store them in our
+      // data array.
+      int bytes = fread(data_blocks[block_index], BLOCK_SIZE, 1, ifp);
+
+      // If bytes == 0 and we haven't reached the end of the file then something is
+      // wrong. If 0 is returned and we also have the EOF flag set then that is OK.
+      // It means we've reached the end of our input file.
+      if (bytes == 0 && !feof(ifp)) 
+      {
+        printf("An error occured reading from the input file.\n");
+        return;
+      }
+      clearerr(ifp);
+      copy_size -= BLOCK_SIZE;
+      offset += BLOCK_SIZE;
+    }
+    if (copy_size > 0) 
+    {
+      int block_index = findFreeBlock();
+
+      if (block_index == -1) 
+      {
+        printf("Error Cant find free Block");
+        return;
+      }
+      int inode_block_entry = findFreeInodeBlockEntry(inode_idx);
+
+      // int inode_idx = findFreeInode();
+      if (inode_block_entry == -1) 
+      {
+        printf("Tannu Error: Cannot find free node block\n");
+        return;
+      }
+      inode_array_ptr[inode_idx] -> blocks[inode_block_entry] = block_index;
+      used_blocks[block_index] = 1;
+      fseek(ifp, offset, SEEK_SET);
+      int bytes = fread(data_blocks[block_index], copy_size, 1, ifp);
+    }
+    fclose(ifp);
+    return;
+  }
+}
+
+/*Function: list
+ *Parameters: void
+ *Returns: void
+ *Description: this function is responsible to list all the files present in the file system
+*/
+void list() {
+
+  if (df() == ((NUM_BLOCKS - 130) * BLOCK_SIZE)) 
+  {
+    printf("list: No files found.\n");
+  } 
+  else 
+  {
+    int i;
+    for (i = 1; i < 128; i++) 
+    {
+      if (directory_ptr[i].valid == 1) 
+      {
+        char * token;
+        char * creationDate = ctime( & inode_array_ptr[i] -> date);
+        token = strtok(creationDate, " \n\r");
+        int k = 0;
+        char timeBuffer[5][10];
+        while (token != NULL) 
+        {
+          strcpy(timeBuffer[k++], token);
+          token = strtok(NULL, "\n\r ");
+        }
+        printf("%d %s %s %s %s\n", inode_array_ptr[i] -> size, timeBuffer[1], timeBuffer[2], timeBuffer[3], directory_ptr[i].name);
+      }
+    }
+  }
+}
+
+/*Function: get
+ *Parameters: cmd
+ *Returns: void
+ *Description: this function is responsible to get the file from the file system and 
+ * make a copy of it in the directory where shell is executing.
+*/
+
+void get(char * * cmd) {
+
+  int status = -1;
+  int dir_idx = 0;
+  int inode_idx = 0;
+  char * fileName = cmd[1];
+  int fileSize;
+  // status = stat(fileName, & buf);
+  int i;
+  for (i = 1; i < 128; i++) 
+  {
+    if (directory_ptr[i].valid && strcmp(directory_ptr[i].name, cmd[1]) == 0) {
+      status = 0;
+      dir_idx = i;
+    }
+  }
+  if (status == -1) 
+  {
+    printf("get error: File not found.\n");
+    return;
+  }
+
+  inode_idx = directory_ptr[dir_idx].inode_idx;
+  fileSize = inode_array_ptr[inode_idx] -> size;
+
+  if (cmd[2] == NULL) 
+  {
+    FILE * ofp = fopen(cmd[1], "w");
+
+    if (ofp == NULL) 
+    {
+      printf("Could not open output file: %s\n", cmd[1]);
+      return;
+    }
+    int count = 0;
+    int offset = 0;
+    int block_index = inode_array_ptr[dir_idx] -> blocks[count];
+    while (fileSize > 0) 
+    {
+      int bytes;
+      if (fileSize < BLOCK_SIZE) 
+      {
+        bytes = fileSize;
+      } 
+      else 
+      {
+        bytes = BLOCK_SIZE;
+      }
+      fwrite(data_blocks[block_index], bytes, 1, ofp);
+      fileSize -= BLOCK_SIZE;
+      offset += BLOCK_SIZE;
+      count++;
+      block_index = inode_array_ptr[dir_idx] -> blocks[count];
+      fseek(ofp, offset, SEEK_SET);
+    }
+    fclose(ofp);
+    return;
+  }
+  if (cmd[2] != NULL) 
+  {
+    FILE * ofp = fopen(cmd[2], "w");
+    if (ofp == NULL) 
+    {
+      printf("Could not open output file: %s\n", cmd[2]);
+      return;
+    }
+    int count = 0;
+    int offset = 0;
+    int block_index = inode_array_ptr[dir_idx] -> blocks[count];
+    while (fileSize > 0) 
+    {
+      int bytes;
+      if (fileSize < BLOCK_SIZE) 
+      {
+        bytes = fileSize;
+      } 
+      else 
+      {
+        bytes = BLOCK_SIZE;
+      }
+      fwrite(data_blocks[block_index], bytes, 1, ofp);
+      fileSize -= BLOCK_SIZE;
+      offset += BLOCK_SIZE;
+      count++;
+      block_index = inode_array_ptr[dir_idx] -> blocks[count];
+      fseek(ofp, offset, SEEK_SET);
+    }
+    fclose(ofp);
+    return;
+  }
+
+}
+
+/*Function: deleteFile
+ *Parameters: cmd
+ *Returns: void
+ *Description: this function is responsible to delete file from the file system
+*/
+
+void deleteFile(char * * cmd) {
+  int i;
+  int nameFound = 0;
+  for (i = 1; i < 128; i++) 
+  {
+    if (directory_ptr[i].valid && strcmp(directory_ptr[i].name, cmd[1]) == 0) 
+    {
+      nameFound = 1;
+      directory_ptr[i].valid = 0;
+      inode_array_ptr[i] -> size = 0;
+      // inode_array_ptr[i]->date = null;
+      inode_array_ptr[i] -> valid = 0;
+      int j;
+
+      for (j = 0; j < MAX_BLOCK_NUM_PER_FILE; j++) 
+      {
+        if (inode_array_ptr[i] -> blocks[j] != -1) 
+        {
+          used_blocks[inode_array_ptr[i] -> blocks[j]] = 0;
+        }
+      }
+      directory_ptr[i].inode_idx = 0;
+    }
+  }
+  if (nameFound == 0) {
+    printf("del error: File not found.");
+  }
+}
+
+/*Function: read_mfs
+ *Parameters: cmd - A pointer to string array. Contains token of the command
+ *entered by the user
+ *Returns: An integer value of 0 for success and -1 for error
+ *Description: It process the user input command and execute different command to perform operation in file system
+ */
+
+int run_mfs(char * * cmd) {
+  char * * command = cmd;
+  while (1) 
+  {
+    if (cmd[0] == '\0') return 1;
+
+    else if ((strcmp(cmd[0], "exit") == 0) || (strcmp(cmd[0], "quit") == 0)) 
+    {
+      exit(1);
+    } 
+    else if ((strcmp(cmd[0], "put") == 0)) 
+    {
+      if (cmd[1] == NULL) 
+      {
+        printf("\nPut something after command");
+        return 0;
+      } 
+      else if (cmd[2] != NULL) 
+      {
+        printf("\nWrong command");
+        return 0;
+      }
+
+      put(command);
+      //printf("%s\n",cmd[1]);
+      return 0;
+    } 
+    else if ((strcmp(cmd[0], "df") == 0)) 
+    {
+      int free_space = df();
+      printf("%d bytes free", free_space);
+      return 0;
+    } 
+    else if ((strcmp(cmd[0], "list") == 0)) 
+    {
+      list();
+      //printf("%d bytes free",free_space);
+      return 0;
+    } 
+    else if ((strcmp(cmd[0], "del") == 0)) 
+    {
+      deleteFile(command);
+      return 0;
+    } 
+    else if ((strcmp(cmd[0], "get") == 0)) 
+    {
+      get(command);
+      return 0;
+    } 
+    else 
+    {
+      printf("Wrong Command");
+      return 0;
+    }
+  }
+}
+
+/*Function: initialize_shell
+ *Parameters: void
+ *Returns: An integer 0 on success and -1 on failure
+ *Description: It initialize all the methods available in shell and process the user command
+ * and return ineger value.
+ */
+int initialize_shell() {
+
+  char * input_string;
+  char * * command;
+  int status;
+  while (1) 
+  {
+    printf("\nmfs> ");
+    input_string = readString(); // call readString method to read all string
+    if (input_string == NULL)
+      continue;
+    command = split_command(input_string); // call for split_command function which tokenize user command
+    status = run_mfs(command); // call for run_msh function
+
+    free(input_string); // releasing memory
+    free(command); // releasing memory
+  }
+  return 0;
+
+}
+
+/*Function: main
+ *Parameters: void
+ *Returns: int
+ *Description: this function is responsible all other
+ *function of this code
+ */
+
+int main() {
+  initialize_dir_inode();
+  return initialize_shell();
+}
